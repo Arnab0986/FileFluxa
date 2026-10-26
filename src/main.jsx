@@ -7,6 +7,7 @@ import { ImageStudio } from './features/ImageStudio'
 import { PdfLab } from './features/PdfLab'
 import { DocumentConverter } from './features/DocumentConverter'
 import { ArchiveTools } from './features/ArchiveTools'
+import { AudioLab } from './features/AudioLab'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
@@ -19,6 +20,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           <Route path="/pdf-lab" element={<PdfLab />} />
           <Route path="/document-converter" element={<DocumentConverter />} />
           <Route path="/archive-tools" element={<ArchiveTools />} />
+          <Route path="/audio-lab" element={<AudioLab />} />
           <Route path="*" element={<Home />} />
         </Routes>
       </AppShell>
