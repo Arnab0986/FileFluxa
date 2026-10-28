@@ -1,7 +1,28 @@
-/node_modules
-/dist
-/.vercel
+# Dependencies
+node_modules/
+
+# Production build
+dist/
+
+# Local environment variables and secrets
 .env
-.env.local
-.DS_Store
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
 *.log
+
+# Operating system
+.DS_Store
+Thumbs.db
+# Local backups
+*.backup
+src.before-router-upgrade/
+
+# Deployment configuration
+.vercel/
+
+# Operating system files
+.DS_Store
+Thumbs.db
