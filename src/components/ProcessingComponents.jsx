@@ -1,41 +1,80 @@
-import React, { useState } from 'react'
-import { Upload, X, File, AlertCircle, Download, CheckCircle2, RefreshCw } from 'lucide-react'
 
-export function FileDropZone({ onFilesSelected, accept = '*', multiple = true }) {
+import React, { useEffect, useState } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
+import {
+  Upload,
+  X,
+  File,
+  AlertCircle,
+  Download,
+  CheckCircle2,
+  RefreshCw,
+  Eye,
+  FileText,
+  Image as ImageIcon,
+  Music,
+  ExternalLink,
+  ShieldCheck,
+  FileArchive,
+} from 'lucide-react'
+
+const formatBytes = (bytes) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+const panelClass =
+  'rounded-2xl border border-slate-200 bg-white shadow-sm'
+
+export function FileDropZone({
+  onFilesSelected,
+  accept = '*',
+  multiple = true,
+}) {
   const [isDragOver, setIsDragOver] = useState(false)
+  const reduceMotion = useReducedMotion()
 
-  const handleDragOver = (e) => {
-    e.preventDefault()
-    setIsDragOver(true)
-  }
-
-  const handleDragLeave = () => {
+  const handleDrop = (event) => {
+    event.preventDefault()
     setIsDragOver(false)
-  }
 
-  const handleDrop = (e) => {
-    e.preventDefault()
-    setIsDragOver(false)
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onFilesSelected(Array.from(e.dataTransfer.files))
+    const droppedFiles = Array.from(event.dataTransfer?.files || [])
+    if (droppedFiles.length) {
+      onFilesSelected?.(multiple ? droppedFiles : droppedFiles.slice(0, 1))
     }
   }
 
-  const handleFileInput = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      onFilesSelected(Array.from(e.target.files))
+  const handleFileInput = (event) => {
+    const selected = Array.from(event.target.files || [])
+    if (selected.length) {
+      onFilesSelected?.(multiple ? selected : selected.slice(0, 1))
     }
+
+    // Let the user select the same file again later.
+    event.target.value = ''
   }
 
   return (
-    <div
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        setIsDragOver(true)
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setIsDragOver(false)
+        }
+      }}
       onDrop={handleDrop}
-      className={`border-2 border-dashed rounded-2xl p-8 text-center transition duration-300 relative cursor-pointer flex flex-col items-center justify-center ${
+      className={`relative flex min-h-64 cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-9 ${
         isDragOver
-          ? 'border-cyan-400 bg-cyan-500/10'
-          : 'border-navy-800 bg-navy-900/60 hover:border-navy-700 hover:bg-navy-900'
+          ? 'border-cyan-500 bg-cyan-50 ring-4 ring-cyan-100'
+          : 'border-slate-300 bg-slate-50 hover:border-cyan-400 hover:bg-cyan-50/50'
       }`}
     >
       <input
@@ -43,112 +82,405 @@ export function FileDropZone({ onFilesSelected, accept = '*', multiple = true })
         multiple={multiple}
         accept={accept}
         onChange={handleFileInput}
-        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+        aria-label="Choose files to process"
+        className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
       />
-      <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 mb-4">
-        <Upload className="w-7 h-7" />
-      </div>
-      <h3 className="text-lg font-bold">Drag and drop your files here</h3>
-      <p className="text-sm text-gray-400 mt-1">or click to browse from your device</p>
-      <span className="inline-block mt-4 text-xs font-semibold px-3 py-1 rounded-full bg-navy-800 text-gray-300 border border-navy-700">
-        100% Client-Side Processing • Secure & Private
+
+      <motion.div
+        animate={
+          reduceMotion
+            ? {}
+            : { y: isDragOver ? -3 : 0, scale: isDragOver ? 1.04 : 1 }
+        }
+        className={`mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border transition-colors ${
+          isDragOver
+            ? 'border-cyan-200 bg-white text-cyan-700'
+            : 'border-cyan-100 bg-white text-cyan-600 shadow-sm'
+        }`}
+      >
+        <Upload className="h-7 w-7" />
+      </motion.div>
+
+      <h3 className="text-lg font-bold text-slate-900 sm:text-xl">
+        {isDragOver ? 'Drop your files here' : 'Drag and drop your files here'}
+      </h3>
+
+      <p className="mt-2 text-sm text-slate-500">
+        or click to browse from your device
+      </p>
+
+      <span className="mt-5 inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700">
+        <ShieldCheck className="h-3.5 w-3.5" />
+        Client-side processing · Secure and private
       </span>
-    </div>
+
+      <p className="mt-3 text-xs text-slate-400">
+        {multiple ? 'Select one or more files' : 'Select one file'}
+      </p>
+    </motion.div>
   )
 }
 
 export function FileQueue({ files, onRemove, onClear }) {
-  if (!files || files.length === 0) return null
+  const reduceMotion = useReducedMotion()
+
+  if (!files?.length) return null
 
   return (
-    <div className="space-y-3 mt-6">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-gray-300">Selected Files ({files.length})</h4>
-        <button
-          onClick={onClear}
-          className="text-xs text-red-400 hover:text-red-300 font-medium transition"
-        >
-          Clear All
-        </button>
-      </div>
-      <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
-        {files.map((file, index) => (
-          <div
-            key={`${file.name}-${index}`}
-            className="flex items-center justify-between p-3 rounded-xl bg-navy-900 border border-navy-800 text-sm"
+    <motion.section
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mt-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-bold text-slate-900">
+            Selected files
+          </h4>
+          <p className="mt-1 text-xs text-slate-500">
+            {files.length} file{files.length === 1 ? '' : 's'} ready for processing
+          </p>
+        </div>
+
+        {onClear && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="rounded-lg px-3 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-50"
           >
-            <div className="flex items-center gap-3 truncate">
-              <div className="p-2 rounded-lg bg-navy-800 text-cyan-400">
-                <File className="w-4 h-4" />
+            Clear all
+          </button>
+        )}
+      </div>
+
+      <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+        {files.map((file, index) => (
+          <motion.div
+            layout={!reduceMotion}
+            key={`${file.name}-${file.size}-${index}`}
+            className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 transition hover:border-slate-300 hover:shadow-sm"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-100 bg-cyan-50 text-cyan-700">
+                <File className="h-5 w-5" />
               </div>
-              <div className="truncate">
-                <div className="font-medium truncate">{file.name}</div>
-                <div className="text-xs text-gray-500">{(file.size / 1024).toFixed(1)} KB</div>
+
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-800">
+                  {file.name}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {formatBytes(file.size)}
+                </p>
               </div>
             </div>
-            <button
-              onClick={() => onRemove(index)}
-              className="p-1 rounded-lg text-gray-400 hover:text-red-400 hover:bg-navy-800 transition"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+
+            {onRemove && (
+              <button
+                type="button"
+                onClick={() => onRemove(index)}
+                aria-label={`Remove ${file.name}`}
+                title="Remove file"
+                className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </motion.div>
         ))}
       </div>
-    </div>
+    </motion.section>
   )
 }
 
-export function ProcessingMachine({ status, progress, message }) {
-  if (status === 'idle') return null
+export function ProcessingMachine({
+  status,
+  progress = 0,
+  message,
+}) {
+  const reduceMotion = useReducedMotion()
+
+  if (!status || status === 'idle') return null
+
+  const safeProgress = Math.max(
+    0,
+    Math.min(100, Number(progress) || 0)
+  )
+
+  const failed = status === 'failed'
+  const completed = status === 'completed'
+
+  const statusLabel = failed
+    ? 'Processing failed'
+    : completed
+      ? 'Processing complete'
+      : 'Processing your files'
 
   return (
-    <div className="p-6 rounded-2xl bg-navy-900 border border-navy-800 space-y-4 my-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          {status === 'processing' && <RefreshCw className="w-5 h-5 text-cyan-400 animate-spin" />}
-          {status === 'completed' && <CheckCircle2 className="w-5 h-5 text-emerald-400" />}
-          {status === 'failed' && <AlertCircle className="w-5 h-5 text-red-400" />}
-          <span className="font-bold capitalize">{status === 'processing' ? 'Processing File...' : status}</span>
+    <motion.section
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`${panelClass} my-5 p-5 sm:p-6`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+              failed
+                ? 'bg-rose-50 text-rose-600'
+                : completed
+                  ? 'bg-emerald-50 text-emerald-600'
+                  : 'bg-cyan-50 text-cyan-700'
+            }`}
+          >
+            {failed ? (
+              <AlertCircle className="h-5 w-5" />
+            ) : completed ? (
+              <CheckCircle2 className="h-5 w-5" />
+            ) : (
+              <RefreshCw
+                className={`h-5 w-5 ${reduceMotion ? '' : 'animate-spin'}`}
+              />
+            )}
+          </div>
+
+          <div className="min-w-0 pt-0.5">
+            <h3 className="font-bold text-slate-900">{statusLabel}</h3>
+            {message && (
+              <p className="mt-1 break-words text-sm leading-5 text-slate-500">
+                {message}
+              </p>
+            )}
+          </div>
         </div>
-        <span className="text-sm font-semibold text-cyan-400">{progress}%</span>
-      </div>
 
-      <div className="w-full h-2 rounded-full bg-navy-950 overflow-hidden">
-        <div
-          className={`h-full transition-all duration-300 ${
-            status === 'failed' ? 'bg-red-500' : status === 'completed' ? 'bg-emerald-400' : 'bg-cyan-400'
+        <span
+          className={`shrink-0 text-sm font-bold tabular-nums ${
+            failed
+              ? 'text-rose-600'
+              : completed
+                ? 'text-emerald-600'
+                : 'text-cyan-700'
           }`}
-          style={{ width: `${progress}%` }}
-        ></div>
+        >
+          {safeProgress}%
+        </span>
       </div>
 
-      {message && <p className="text-xs text-gray-400">{message}</p>}
-    </div>
+      <div
+        className="mt-5 h-2.5 w-full overflow-hidden rounded-full bg-slate-100"
+        role="progressbar"
+        aria-label="Processing progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={safeProgress}
+      >
+        <motion.div
+          initial={false}
+          animate={{ width: `${safeProgress}%` }}
+          transition={{ duration: reduceMotion ? 0 : 0.3 }}
+          className={`h-full rounded-full ${
+            failed
+              ? 'bg-rose-500'
+              : completed
+                ? 'bg-emerald-500'
+                : 'bg-gradient-to-r from-cyan-500 to-indigo-500'
+          }`}
+        />
+      </div>
+    </motion.section>
   )
 }
 
 export function ResultPanel({ result, onDownload }) {
+  const [showPreview, setShowPreview] = useState(true)
+  const reduceMotion = useReducedMotion()
+
+  useEffect(() => {
+    setShowPreview(true)
+  }, [result?.url])
+
   if (!result) return null
 
+  const name = result.name || 'processed-file'
+  const size = Number(result.size) || result.blob?.size || 0
+  const previewUrl = result.url
+  const extension = name.split('.').pop()?.toLowerCase() || ''
+  const mimeType = result.blob?.type || ''
+
+  const isImage =
+    mimeType.startsWith('image/') ||
+    /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/i.test(name)
+
+  const isPdf =
+    mimeType === 'application/pdf' || extension === 'pdf'
+
+  const isAudio =
+    mimeType.startsWith('audio/') ||
+    /\.(mp3|wav|ogg|oga|m4a|aac|flac|webm|aiff?)$/i.test(name)
+
+  const isVideo =
+    mimeType.startsWith('video/') ||
+    /\.(mp4|webm|mov|ogv)$/i.test(name)
+
+  const isText =
+    mimeType.startsWith('text/') ||
+    /\.(txt|csv|json|xml|md|markdown|html|css|js|rtf)$/i.test(name)
+
+  const isArchive =
+    /\.(zip|7z|rar|tar|gz)$/i.test(name) ||
+    mimeType.includes('zip') ||
+    mimeType.includes('compressed')
+
   return (
-    <div className="p-6 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 space-y-4 my-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-          <div>
-            <h4 className="font-bold text-emerald-300">Processing Complete!</h4>
-            <p className="text-xs text-gray-300">Output ready: {result.name} ({(result.size / 1024).toFixed(1)} KB)</p>
+    <motion.section
+      initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="my-6 overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-sm"
+    >
+      <div className="flex flex-col gap-4 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-700">
+            <CheckCircle2 className="h-6 w-6" />
+          </div>
+
+          <div className="min-w-0">
+            <h4 className="font-bold text-slate-900">Your file is ready</h4>
+            <p
+              className="mt-1 truncate text-sm text-slate-600"
+              title={name}
+            >
+              {name}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {formatBytes(size)}
+            </p>
           </div>
         </div>
-        <button
-          onClick={onDownload}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-navy-950 font-bold transition shadow-lg shadow-emerald-500/20"
-        >
-          <Download className="w-4 h-4" />
-          <span>Download Output</span>
-        </button>
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowPreview((current) => !current)}
+            aria-expanded={showPreview}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-cyan-300 hover:bg-cyan-50"
+          >
+            <Eye className="h-4 w-4" />
+            {showPreview ? 'Hide preview' : 'Preview'}
+          </button>
+
+          <button
+            type="button"
+            onClick={onDownload}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-cyan-700 focus:outline-none focus:ring-4 focus:ring-cyan-100"
+          >
+            <Download className="h-4 w-4" />
+            Download
+          </button>
+        </div>
       </div>
-    </div>
+
+      {showPreview && (
+        <div className="p-4 sm:p-5">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            {isImage ? (
+              <ImageIcon className="h-4 w-4 text-cyan-700" />
+            ) : isAudio ? (
+              <Music className="h-4 w-4 text-cyan-700" />
+            ) : isArchive ? (
+              <FileArchive className="h-4 w-4 text-cyan-700" />
+            ) : (
+              <FileText className="h-4 w-4 text-cyan-700" />
+            )}
+            Output preview
+          </div>
+
+          <div className="flex min-h-40 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-4">
+            {previewUrl && isImage && (
+              <img
+                src={previewUrl}
+                alt={`Preview of ${name}`}
+                className="max-h-[480px] max-w-full rounded-lg object-contain"
+              />
+            )}
+
+            {previewUrl && isPdf && (
+              <iframe
+                src={previewUrl}
+                title={`PDF preview: ${name}`}
+                className="h-[480px] w-full rounded-lg border border-slate-200 bg-white"
+              />
+            )}
+
+            {previewUrl && isAudio && (
+              <div className="w-full max-w-xl space-y-3">
+                <div className="flex items-center gap-3 text-slate-700">
+                  <Music className="h-8 w-8 shrink-0 text-cyan-700" />
+                  <span className="break-all text-sm font-medium">{name}</span>
+                </div>
+                <audio
+                  controls
+                  preload="metadata"
+                  src={previewUrl}
+                  className="w-full"
+                >
+                  Your browser does not support audio playback.
+                </audio>
+              </div>
+            )}
+
+            {previewUrl && isVideo && (
+              <video
+                controls
+                preload="metadata"
+                src={previewUrl}
+                className="max-h-[480px] max-w-full rounded-lg"
+              >
+                Your browser does not support video playback.
+              </video>
+            )}
+
+            {previewUrl && isText && (
+              <div className="w-full text-center">
+                <FileText className="mx-auto mb-3 h-8 w-8 text-cyan-700" />
+                <p className="break-all text-sm font-semibold text-slate-800">
+                  {name}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Open the generated file to inspect its contents.
+                </p>
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-cyan-700 hover:text-cyan-800"
+                >
+                  Open file <ExternalLink className="h-4 w-4" />
+                </a>
+              </div>
+            )}
+
+            {!isImage && !isPdf && !isAudio && !isVideo && !isText && (
+              <div className="max-w-sm text-center">
+                {isArchive ? (
+                  <FileArchive className="mx-auto mb-3 h-9 w-9 text-cyan-700" />
+                ) : (
+                  <File className="mx-auto mb-3 h-9 w-9 text-cyan-700" />
+                )}
+                <p className="break-all text-sm font-semibold text-slate-800">
+                  {name}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  A visual preview is not available for this file type.
+                  You can still download the generated file.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </motion.section>
   )
 }
