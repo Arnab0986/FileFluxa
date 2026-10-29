@@ -1,9 +1,18 @@
-
+import { visualizer } from 'rollup-plugin-visualizer'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+  react(),
+  visualizer({
+    filename: './stats.html',
+    template: 'treemap',
+    gzipSize: true,
+    brotliSize: true,
+    open: true,
+  }),
+],
 
   build: {
     target: 'es2022',
@@ -33,24 +42,6 @@ export default defineConfig({
 
           if (id.includes('/node_modules/lucide-react/')) {
             return 'icons-vendor'
-          }
-
-          if (id.includes('/node_modules/xlsx/')) {
-            return 'xlsx-vendor'
-          }
-
-          if (
-            id.includes('/node_modules/pdfjs-dist/') ||
-            id.includes('/node_modules/pdf-lib/')
-          ) {
-            return 'pdf-vendor'
-          }
-
-          if (
-            id.includes('/node_modules/docx/') ||
-            id.includes('/node_modules/mammoth/')
-          ) {
-            return 'document-vendor'
           }
 
           if (id.includes('/node_modules/jszip/')) {

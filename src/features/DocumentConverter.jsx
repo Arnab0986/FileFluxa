@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
@@ -23,18 +22,14 @@ const OPTIONS = [
   { id: 'txt-to-pdf', label: 'TXT / Markdown to PDF', accepts: '.txt,.md,.markdown' },
   { id: 'docx-to-txt', label: 'DOCX to TXT', accepts: '.docx' },
   { id: 'pdf-to-txt', label: 'PDF to TXT', accepts: '.pdf' },
-  { id: 'docx-to-pdf', label: 'DOCX to PDF (text only)', accepts: '.docx' },
-  { id: 'pdf-to-docx', label: 'PDF to editable DOCX', accepts: '.pdf' },
+  { id: 'docx-to-pdf', label: 'DOCX to PDF (text-focused)', accepts: '.docx' },
+  { id: 'pdf-to-docx', label: 'PDF to editable DOCX (text-focused)', accepts: '.pdf' },
   { id: 'rtf-to-txt', label: 'RTF to TXT (basic)', accepts: '.rtf' },
   { id: 'txt-to-rtf', label: 'TXT to RTF', accepts: '.txt,.md,.markdown' },
 ]
 
 const XLSX_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-
-function baseName(name) {
-  return name.replace(/\.[^.]+$/, '') || 'document'
-}
 
 function csvToRows(input) {
   const text = String(input ?? '').replace(/^\uFEFF/, '')
@@ -43,13 +38,13 @@ function csvToRows(input) {
   let cell = ''
   let quoted = false
 
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < text.length; i += 1) {
     const char = text[i]
 
     if (char === '"') {
       if (quoted && text[i + 1] === '"') {
         cell += '"'
-        i++
+        i += 1
       } else {
         quoted = !quoted
       }
@@ -57,7 +52,7 @@ function csvToRows(input) {
       row.push(cell)
       cell = ''
     } else if ((char === '\n' || char === '\r') && !quoted) {
-      if (char === '\r' && text[i + 1] === '\n') i++
+      if (char === '\r' && text[i + 1] === '\n') i += 1
       row.push(cell)
       if (row.some(value => value !== '')) rows.push(row)
       row = []
@@ -74,162 +69,202 @@ function csvToRows(input) {
 }
 
 function rowsToCsv(rows) {
-  return rows.map(row =>
-    row.map(value => {
-      const text =
-        value == null
-          ? ''
-          : typeof value === 'object'
-            ? JSON.stringify(value)
-            : String(value)
+  return rows
+    .map(row =>
+      row
+        .map(value => {
+          let text
+          if (value == null) text = ''
+          else if (typeof value === 'object') text = JSON.stringify(value)
+          else text = String(value)
 
-      return /[",\r\n]/.test(text)
-        ? `"${text.replace(/"/g, '""')}"`
-        : text
-    }).join(',')
-  ).join('\r\n')
+          return /[",\r\n]/.test(text)
+            ? `"${text.replace(/"/g, '""')}"`
+            : text
+        })
+        .join(','),
+    )
+    .join('\r\n')
 }
 
-function csvToRecords(rows) {
+function baseName(name) {
+  return name.replace(/\.[^.]+$/, '') || 'document'
+}
+
+function rowsToRecords(rows) {
   if (!rows.length) throw new Error('The CSV file is empty.')
 
-  const headers = rows[0].map(value => String(value ?? '').trim())
-
+  const headers = rows[0].map((header, index) =>
+    (index === 0 ? header.replace(/^\uFEFF/, '') : header).trim(),
+  )
   if (headers.some(header => !header)) {
-    throw new Error('Every CSV column must have a heading.')
+    throw new Error('CSV contains an empty column heading. Add a name to every column.')
   }
-
   if (new Set(headers).size !== headers.length) {
-    throw new Error('Duplicate CSV column headings are not supported.')
+    throw new Error('CSV contains duplicate column headings. Rename duplicate headings before converting.')
   }
 
   return rows.slice(1).map(row =>
-    Object.fromEntries(
-      headers.map((header, index) => [header, row[index] ?? ''])
-    )
+    Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ''])),
   )
 }
 
 function normalizeRecords(data) {
   const records = Array.isArray(data) ? data : [data]
-
   if (
     !records.length ||
-    records.some(item => !item || typeof item !== 'object' || Array.isArray(item))
+    records.some(
+      item => !item || typeof item !== 'object' || Array.isArray(item),
+    )
   ) {
     throw new Error('JSON must contain an object or an array of objects.')
   }
-
   return records
 }
 
 async function extractPdfText(file) {
-  const pdfjs = await import('pdfjs-dist')
-  const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+  const pdfjsLib = await import('pdfjs-dist')
+  const workerUrl = (
+    await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+  ).default
 
-  pdfjs.GlobalWorkerOptions.workerSrc = worker.default
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
-  const loadingTask = pdfjs.getDocument({
-    data: new Uint8Array(await file.arrayBuffer()),
+  const data = new Uint8Array(await file.arrayBuffer())
+  if (!data.length) throw new Error('The selected PDF file is empty.')
+
+  const loadingTask = pdfjsLib.getDocument({
+    data,
+    useSystemFonts: true,
+    isEvalSupported: false,
   })
-  const pdf = await loadingTask.promise
-  const pages = []
+
+  let pdf = null
 
   try {
-    for (let number = 1; number <= pdf.numPages; number++) {
-      const page = await pdf.getPage(number)
-      const content = await page.getTextContent()
-      const lines = new Map()
+    pdf = await loadingTask.promise
+    const pages = []
+    let totalTextItems = 0
+    let totalCharacters = 0
 
-      for (const item of content.items) {
-        if (!item.str?.trim()) continue
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber)
 
-        const y = Math.round(item.transform?.[5] ?? 0)
-        if (!lines.has(y)) lines.set(y, [])
-        lines.get(y).push({
-          x: item.transform?.[4] ?? 0,
-          width: item.width ?? 0,
-          text: item.str,
+      try {
+        const content = await page.getTextContent({
+          includeMarkedContent: false,
+          disableNormalization: false,
         })
-      }
 
-      const text = [...lines.entries()]
-        .sort((a, b) => b[0] - a[0])
-        .map(([, items]) => {
-          items.sort((a, b) => a.x - b.x)
-          let output = ''
-          let previous = null
+        const items = content.items.filter(
+          item => typeof item.str === 'string' && item.str.length > 0,
+        )
+        totalTextItems += items.length
 
-          for (const item of items) {
-            if (
-              previous &&
-              item.x - (previous.x + previous.width) > 2 &&
-              !output.endsWith(' ')
+        // Preserve PDF.js's content order first. Sorting every item by exact
+        // coordinates can scramble text in multi-column and tightly spaced PDFs.
+        let pageText = ''
+        let previousItem = null
+
+        for (const item of items) {
+          const value = item.str ?? ''
+          if (!value) continue
+
+          if (previousItem) {
+            const currentY = item.transform?.[5]
+            const previousY = previousItem.transform?.[5]
+            const currentX = item.transform?.[4]
+            const previousEndX =
+              (previousItem.transform?.[4] ?? 0) + (previousItem.width ?? 0)
+
+            const lineChanged =
+              Number.isFinite(currentY) &&
+              Number.isFinite(previousY) &&
+              Math.abs(currentY - previousY) > 3
+            const hasHorizontalGap =
+              Number.isFinite(currentX) && currentX - previousEndX > 2
+
+            if (previousItem.hasEOL || lineChanged) {
+              pageText = pageText.trimEnd() + '\n'
+            } else if (
+              hasHorizontalGap &&
+              !pageText.endsWith(' ') &&
+              !pageText.endsWith('\n') &&
+              !value.startsWith(' ')
             ) {
-              output += ' '
+              pageText += ' '
             }
-            output += item.text
-            previous = item
           }
 
-          return output.trim()
-        })
-        .filter(Boolean)
-        .join('\n')
+          pageText += value
+          previousItem = item
+        }
 
-      pages.push(`--- Page ${number} ---\n${text}`)
-      page.cleanup()
+        // If PDF.js returned text items but their positioning metadata was
+        // unusual, fall back to joining their strings in the original order.
+        pageText = pageText.trim()
+        if (!pageText && items.length) {
+          pageText = items.map(item => item.str).join(' ').trim()
+        }
+
+        totalCharacters += pageText.length
+        pages.push(`--- Page ${pageNumber} ---\n${pageText}`)
+      } finally {
+        page.cleanup()
+      }
     }
 
     const result = pages.join('\n\n').trim()
+    const contentOnly = result.replace(/--- Page \d+ ---/g, '').trim()
 
-    if (!result.replace(/--- Page \d+ ---/g, '').trim()) {
+    if (totalTextItems === 0 || totalCharacters === 0 || !contentOnly) {
       throw new Error(
-        'No selectable text found. Scanned PDFs require OCR.'
+        'PDF.js could not extract selectable text from this PDF. ' +
+          'If you can select and copy text from the same file in a PDF reader, ' +
+          'the document may use unusual text encoding or font mappings. ' +
+          'This converter currently extracts embedded text; scanned/image-only PDFs require OCR.',
       )
     }
 
     return result
+  } catch (error) {
+    if (error instanceof Error && /could not extract selectable text/i.test(error.message)) {
+      throw error
+    }
+    console.error('PDF text extraction failed:', error)
+    throw new Error(
+      `Could not read this PDF (${error?.message || 'unknown PDF.js error'}). ` +
+        'Try opening and saving a fresh copy of the PDF, then try again.',
+    )
   } finally {
-    if (typeof pdf.destroy === 'function') await pdf.destroy()
-    else if (typeof loadingTask.destroy === 'function') await loadingTask.destroy()
+    if (pdf && typeof pdf.destroy === 'function') {
+      await pdf.destroy()
+    } else if (typeof loadingTask.destroy === 'function') {
+      await loadingTask.destroy()
+    }
   }
 }
 
-async function makeDocx(text) {
-  const { Document, Packer, Paragraph } = await import('docx')
-  const normalized = String(text ?? '').replace(/\r\n?/g, '\n')
-
-  if (!normalized.trim()) {
-    throw new Error('The source file contains no text.')
-  }
-
-  const document = new Document({
-    sections: [{
-      properties: {},
-      children: normalized.split('\n').map(line =>
-        new Paragraph({ text: line || ' ' })
-      ),
-    }],
+function assertPdfCompatibleText(text) {
+  // pdf-lib StandardFonts use WinAnsi encoding; fail clearly instead of silently
+  // producing missing glyphs or a broken output for unsupported Unicode.
+  const unsupported = [...text].find(char => {
+    const code = char.codePointAt(0)
+    return code > 255 && !'\u2013\u2014\u2018\u2019\u201c\u201d\u2022\u2026\u20ac'.includes(char)
   })
-
-  return Packer.toBlob(document)
-}
-
-async function makePdf(text) {
-  const { PDFDocument, StandardFonts } = await import('pdf-lib')
-  const normalized = String(text ?? '').replace(/\r\n?/g, '\n')
-
-  if (!normalized.trim()) throw new Error('The source file contains no text.')
-
-  const unsupported = [...normalized].find(char => char.codePointAt(0) > 255)
-
   if (unsupported) {
     throw new Error(
-      'The built-in PDF font cannot render some Unicode characters. Try TXT to DOCX instead.'
+      `This PDF generator cannot reliably render "${unsupported}" or some non-Latin characters with its built-in font. Use TXT → DOCX for Unicode text, or use a PDF workflow with an embedded Unicode font.`,
     )
   }
+}
 
+async function createPdf(inputText) {
+  const text = String(inputText ?? '').replace(/\r\n?/g, '\n')
+  if (!text.trim()) throw new Error('The source file contains no text to place in the PDF.')
+  assertPdfCompatibleText(text)
+
+  const { PDFDocument, StandardFonts } = await import('pdf-lib')
   const pdf = await PDFDocument.create()
   const font = await pdf.embedFont(StandardFonts.Helvetica)
   const pageWidth = 595.28
@@ -240,17 +275,36 @@ async function makePdf(text) {
   const maxWidth = pageWidth - margin * 2
   const lines = []
 
-  for (const paragraph of normalized.split('\n')) {
+  for (const paragraph of text.split('\n')) {
     if (!paragraph) {
       lines.push('')
       continue
     }
 
     let current = ''
-
     for (const word of paragraph.split(/\s+/)) {
-      const candidate = current ? `${current} ${word}` : word
+      // Wrap very long tokens too, so a long URL or unbroken string cannot
+      // run beyond the page's right edge.
+      if (font.widthOfTextAtSize(word, fontSize) > maxWidth) {
+        if (current) {
+          lines.push(current)
+          current = ''
+        }
+        let chunk = ''
+        for (const char of word) {
+          const candidate = chunk + char
+          if (chunk && font.widthOfTextAtSize(candidate, fontSize) > maxWidth) {
+            lines.push(chunk)
+            chunk = char
+          } else {
+            chunk = candidate
+          }
+        }
+        current = chunk
+        continue
+      }
 
+      const candidate = current ? `${current} ${word}` : word
       if (current && font.widthOfTextAtSize(candidate, fontSize) > maxWidth) {
         lines.push(current)
         current = word
@@ -258,36 +312,50 @@ async function makePdf(text) {
         current = candidate
       }
     }
-
     lines.push(current)
   }
 
-  const linesPerPage = Math.floor(
-    (pageHeight - margin * 2) / lineHeight
-  )
-
-  for (let i = 0; i < lines.length; i += linesPerPage) {
+  const perPage = Math.floor((pageHeight - margin * 2) / lineHeight)
+  for (let index = 0; index < Math.max(lines.length, 1); index += perPage) {
     const page = pdf.addPage([pageWidth, pageHeight])
     let y = pageHeight - margin
-
-    for (const line of lines.slice(i, i + linesPerPage)) {
+    for (const line of lines.slice(index, index + perPage)) {
       if (line) page.drawText(line, { x: margin, y, size: fontSize, font })
       y -= lineHeight
     }
   }
 
-  return new Blob([await pdf.save()], { type: 'application/pdf' })
+  const bytes = await pdf.save()
+  if (!bytes?.length) throw new Error('PDF generation returned an empty file.')
+  return new Blob([bytes], { type: 'application/pdf' })
 }
 
-function rtfToText(rtf) {
+async function makeDocx(text) {
+  const { Document, Packer, Paragraph } = await import('docx')
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n')
+  if (!normalized.trim()) throw new Error('There is no text to put into the DOCX file.')
+
+  const children = normalized.split('\n').map(line =>
+    new Paragraph({ text: line || ' ' }),
+  )
+  const document = new Document({
+    sections: [{ properties: {}, children }],
+  })
+  return Packer.toBlob(document)
+}
+
+function basicRtfToText(rtf) {
+  // This is intentionally a conservative, basic RTF text reader. Full RTF
+  // interpretation requires a dedicated parser.
   return rtf
     .replace(/\\par[d]?\b/g, '\n')
     .replace(/\\line\b/g, '\n')
     .replace(/\\tab\b/g, '\t')
     .replace(/\\'[0-9a-fA-F]{2}/g, '')
-    .replace(/\\u(-?\d+)\??/g, (_, code) =>
-      String.fromCharCode(Number(code) < 0 ? Number(code) + 65536 : Number(code))
-    )
+    .replace(/\\u(-?\d+)\??/g, (_, code) => {
+      const value = Number(code)
+      return String.fromCharCode(value < 0 ? value + 65536 : value)
+    })
     .replace(/\\[a-zA-Z]+-?\d* ?/g, '')
     .replace(/\\([{}\\])/g, '$1')
     .replace(/[{}]/g, '')
@@ -309,7 +377,7 @@ export function DocumentConverter() {
     }
   }, [result])
 
-  function resetState() {
+  const resetState = () => {
     setFiles([])
     setResult(null)
     setStatus('idle')
@@ -317,15 +385,17 @@ export function DocumentConverter() {
     setMessage('')
   }
 
-  async function handleProcess() {
+  const handleProcess = async () => {
     if (!files.length || status === 'processing') return
 
     const file = files[0]
-    const ext = file.name.split('.').pop().toLowerCase()
+    const ext = file.name.includes('.')
+      ? file.name.split('.').pop().toLowerCase()
+      : ''
 
     if (!option.accepts.split(',').includes(`.${ext}`)) {
       setStatus('failed')
-      setMessage(`This conversion does not support .${ext} files.`)
+      setMessage(`This conversion does not support .${ext || 'unknown'} files.`)
       return
     }
 
@@ -339,7 +409,8 @@ export function DocumentConverter() {
       const name = baseName(file.name)
 
       if (action === 'csv-to-json') {
-        const records = csvToRecords(csvToRows(await file.text()))
+        const rows = csvToRows(await file.text())
+        const records = rowsToRecords(rows)
         blob = new Blob([JSON.stringify(records, null, 2)], {
           type: 'application/json;charset=utf-8',
         })
@@ -347,51 +418,42 @@ export function DocumentConverter() {
       } else if (action === 'json-to-csv') {
         const records = normalizeRecords(JSON.parse(await file.text()))
         const headers = [...new Set(records.flatMap(Object.keys))]
-        if (!headers.length) throw new Error('No object fields were found.')
-
-        blob = new Blob([
-          rowsToCsv([headers, ...records.map(row => headers.map(key => row[key] ?? ''))]),
-        ], { type: 'text/csv;charset=utf-8' })
+        if (!headers.length) throw new Error('No object fields were found in the JSON.')
+        blob = new Blob(
+          [rowsToCsv([headers, ...records.map(item => headers.map(key => item[key] ?? ''))])],
+          { type: 'text/csv;charset=utf-8' },
+        )
         outputExt = 'csv'
-      } else if ([
-        'csv-to-xlsx',
-        'xlsx-to-csv',
-        'xlsx-to-json',
-        'json-to-xlsx',
-      ].includes(action)) {
+      } else if (
+        ['csv-to-xlsx', 'xlsx-to-csv', 'xlsx-to-json', 'json-to-xlsx'].includes(action)
+      ) {
         setMessage('Loading spreadsheet engine...')
-        setProgress(35)
-
+        setProgress(30)
         const XLSX = await import('xlsx')
 
         if (action === 'csv-to-xlsx') {
           const rows = csvToRows(await file.text())
           if (!rows.length) throw new Error('The CSV file is empty.')
-
           const workbook = XLSX.utils.book_new()
-          XLSX.utils.book_append_sheet(
-            workbook,
-            XLSX.utils.aoa_to_sheet(rows),
-            'Sheet1'
+          XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Sheet1')
+          blob = new Blob(
+            [XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })],
+            { type: XLSX_MIME },
           )
-
-          blob = new Blob([
-            XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }),
-          ], { type: XLSX_MIME })
           outputExt = 'xlsx'
         } else if (action === 'xlsx-to-csv' || action === 'xlsx-to-json') {
           const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
-          const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-
-          if (!firstSheet) throw new Error('No worksheet found in the spreadsheet.')
-
+          const firstSheetName = workbook.SheetNames[0]
+          const sheet = firstSheetName ? workbook.Sheets[firstSheetName] : null
+          if (!sheet) throw new Error('The spreadsheet has no worksheets.')
           if (action === 'xlsx-to-csv') {
-            const csv = XLSX.utils.sheet_to_csv(firstSheet)
-            if (!csv.trim()) throw new Error('The worksheet contains no data.')
+            const csv = XLSX.utils.sheet_to_csv(sheet)
+            if (!csv.trim()) throw new Error('The first worksheet contains no data.')
             blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
             outputExt = 'csv'
           } else {
-            const records = XLSX.utils.sheet_to_json(firstSheet, { defval: '' })
+            const records = XLSX.utils.sheet_to_json(sheet, { defval: '' })
+            if (!records.length) throw new Error('The first worksheet contains no data rows.')
             blob = new Blob([JSON.stringify(records, null, 2)], {
               type: 'application/json;charset=utf-8',
             })
@@ -400,24 +462,34 @@ export function DocumentConverter() {
         } else {
           const records = normalizeRecords(JSON.parse(await file.text()))
           const workbook = XLSX.utils.book_new()
-          XLSX.utils.book_append_sheet(
-            workbook,
-            XLSX.utils.json_to_sheet(records),
-            'Sheet1'
+          XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(records), 'Sheet1')
+          blob = new Blob(
+            [XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })],
+            { type: XLSX_MIME },
           )
-
-          blob = new Blob([
-            XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }),
-          ], { type: XLSX_MIME })
           outputExt = 'xlsx'
         }
+      } else if (action === 'rtf-to-txt') {
+        const plain = basicRtfToText(await file.text())
+        if (!plain.trim()) throw new Error('No readable text was found in the RTF file.')
+        blob = new Blob([plain], { type: 'text/plain;charset=utf-8' })
+        outputExt = 'txt'
+      } else if (action === 'txt-to-rtf') {
+        const text = await file.text()
+        const escaped = text
+          .replace(/\\/g, '\\\\')
+          .replace(/{/g, '\\{')
+          .replace(/}/g, '\\}')
+          .replace(/\r\n?/g, '\n')
+          .replace(/\n/g, '\\par\n')
+        blob = new Blob([`{\\rtf1\\ansi\\deff0\\uc1 ${escaped}}`], {
+          type: 'application/rtf;charset=utf-8',
+        })
+        outputExt = 'rtf'
       } else if (action === 'txt-upper') {
         const text = await file.text()
         if (!text.length) throw new Error('The source file is empty.')
-
-        blob = new Blob([text.toUpperCase()], {
-          type: 'text/plain;charset=utf-8',
-        })
+        blob = new Blob([text.toUpperCase()], { type: 'text/plain;charset=utf-8' })
         outputExt = ext === 'markdown' ? 'md' : ext
       } else if (action === 'extract-docx' || action === 'docx-to-txt') {
         setProgress(35)
@@ -425,67 +497,48 @@ export function DocumentConverter() {
         const extracted = await mammoth.extractRawText({
           arrayBuffer: await file.arrayBuffer(),
         })
-
         if (!extracted.value.trim()) {
-          throw new Error('No extractable text was found in this DOCX file.')
+          throw new Error('No extractable paragraph text was found in this DOCX. It may contain only images or unsupported content.')
         }
-
-        blob = new Blob([extracted.value], {
-          type: 'text/plain;charset=utf-8',
-        })
+        blob = new Blob([extracted.value], { type: 'text/plain;charset=utf-8' })
         outputExt = 'txt'
       } else if (action === 'extract-pdf' || action === 'pdf-to-txt') {
         setProgress(35)
-        blob = new Blob([await extractPdfText(file)], {
-          type: 'text/plain;charset=utf-8',
-        })
+        const text = await extractPdfText(file)
+        blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
         outputExt = 'txt'
-      } else if (action === 'txt-to-docx') {
-        blob = await makeDocx(await file.text())
-        outputExt = 'docx'
-      } else if (action === 'txt-to-pdf') {
-        blob = await makePdf(await file.text())
-        outputExt = 'pdf'
       } else if (action === 'docx-to-pdf') {
         setProgress(30)
-        setMessage('Extracting text. Original layout and images may not be preserved.')
-
+        setMessage('Extracting document text. Layout, images and tables may not be preserved...')
         const mammoth = await import('mammoth')
         const extracted = await mammoth.extractRawText({
           arrayBuffer: await file.arrayBuffer(),
         })
-
-        blob = await makePdf(extracted.value)
+        if (!extracted.value.trim()) {
+          throw new Error('No extractable text was found in this DOCX. Image-only content cannot be converted by this text-based workflow.')
+        }
+        setProgress(70)
+        blob = await createPdf(extracted.value)
         outputExt = 'pdf'
       } else if (action === 'pdf-to-docx') {
         setProgress(30)
-        setMessage('Extracting selectable PDF text...')
-        blob = await makeDocx(await extractPdfText(file))
+        setMessage('Extracting selectable PDF text. Original layout and images may not be preserved...')
+        const text = await extractPdfText(file)
+        setProgress(70)
+        blob = await makeDocx(text)
         outputExt = 'docx'
-      } else if (action === 'rtf-to-txt') {
-        const text = rtfToText(await file.text())
-        if (!text.trim()) throw new Error('No readable text was found in the RTF file.')
-
-        blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
-        outputExt = 'txt'
-      } else if (action === 'txt-to-rtf') {
-        const text = (await file.text())
-          .replace(/\\/g, '\\\\')
-          .replace(/{/g, '\\{')
-          .replace(/}/g, '\\}')
-          .replace(/\r\n?/g, '\n')
-          .replace(/\n/g, '\\par\n')
-
-        blob = new Blob([`{\\rtf1\\ansi\\deff0\\uc1 ${text}}`], {
-          type: 'application/rtf;charset=utf-8',
-        })
-        outputExt = 'rtf'
+      } else if (action === 'txt-to-docx') {
+        blob = await makeDocx(await file.text())
+        outputExt = 'docx'
+      } else if (action === 'txt-to-pdf') {
+        blob = await createPdf(await file.text())
+        outputExt = 'pdf'
       } else {
         throw new Error('Unsupported conversion option.')
       }
 
       if (!(blob instanceof Blob) || blob.size === 0) {
-        throw new Error('Conversion produced an empty file.')
+        throw new Error('The conversion produced an empty file. Check the source content and try again.')
       }
 
       const url = URL.createObjectURL(blob)
@@ -495,10 +548,9 @@ export function DocumentConverter() {
         url,
         blob,
       })
-
       setProgress(100)
       setStatus('completed')
-      setMessage(`Conversion completed. Output size: ${(blob.size / 1024).toFixed(1)} KB.`)
+      setMessage(`Conversion completed. Output: ${(blob.size / 1024).toFixed(1)} KB.`)
     } catch (error) {
       console.error('Document conversion failed:', error)
       setProgress(0)
@@ -521,27 +573,24 @@ export function DocumentConverter() {
             Document &amp; Data Converter
           </h1>
         </div>
-
         <p className="text-sm text-slate-600">
-          Convert TXT, Markdown, CSV, JSON, DOCX, spreadsheets, RTF and text-based PDFs.
+          Convert TXT, Markdown, CSV, JSON, DOCX, spreadsheets, RTF and text-based PDFs locally.
         </p>
-
         <p className="mt-2 flex items-center gap-2 text-xs text-emerald-700">
           <ShieldCheck className="h-4 w-4" />
-          Files are processed locally in your browser.
+          Files are processed in your browser, not uploaded to a conversion server.
         </p>
       </header>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
         <section className="min-w-0 space-y-6 lg:col-span-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <label
               htmlFor="document-action"
               className="mb-2 block text-sm font-semibold text-slate-700"
             >
               Conversion type
             </label>
-
             <select
               id="document-action"
               value={action}
@@ -549,7 +598,7 @@ export function DocumentConverter() {
                 setAction(event.target.value)
                 resetState()
               }}
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-cyan-400"
             >
               {OPTIONS.map(item => (
                 <option key={item.id} value={item.id}>
@@ -557,10 +606,7 @@ export function DocumentConverter() {
                 </option>
               ))}
             </select>
-
-            <p className="mt-2 text-xs text-slate-500">
-              Accepted input: {option.accepts}
-            </p>
+            <p className="mt-2 text-xs text-slate-500">Accepted input: {option.accepts}</p>
           </div>
 
           <FileDropZone
@@ -604,17 +650,11 @@ export function DocumentConverter() {
             </button>
           )}
 
-          <ProcessingMachine
-            status={status}
-            progress={progress}
-            message={message}
-          />
-
+          <ProcessingMachine status={status} progress={progress} message={message} />
           <ResultPanel
             result={result}
             onDownload={() => {
               if (!result?.url) return
-
               const anchor = document.createElement('a')
               anchor.href = result.url
               anchor.download = result.name
@@ -625,35 +665,20 @@ export function DocumentConverter() {
           />
         </section>
 
-        <aside className="min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900">
-            Supported conversions
-          </h3>
-
+        <aside className="min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white p-6">
+          <h3 className="text-lg font-bold text-slate-900">Supported conversions</h3>
           <div className="space-y-3 text-sm text-slate-700">
-            {[
-              'CSV ↔ JSON and Excel',
-              'TXT / Markdown → PDF, DOCX, RTF',
-              'DOCX → TXT / basic PDF',
-              'PDF → TXT / editable DOCX',
-              'Basic RTF → TXT',
-            ].map(item => (
-              <p key={item} className="flex items-start gap-2">
-                <FileText className="mt-0.5 h-4 w-4 shrink-0 text-cyan-700" />
-                {item}
-              </p>
-            ))}
+            <p className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-cyan-700" /> CSV ↔ JSON and Excel</p>
+            <p className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-cyan-700" /> TXT / Markdown → PDF, DOCX, RTF</p>
+            <p className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-cyan-700" /> DOCX → TXT / basic PDF</p>
+            <p className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-cyan-700" /> PDF → TXT / editable DOCX</p>
+            <p className="flex items-start gap-2"><FileText className="mt-0.5 h-4 w-4 shrink-0 text-cyan-700" /> Basic RTF → TXT</p>
           </div>
-
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
-            DOCX and PDF conversions are text-focused. Original layouts, images
-            and tables may not be preserved. Scanned PDFs require OCR. The
-            built-in PDF font does not support every writing system.
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-200">
+            DOCX/PDF conversions here are text-focused and do not preserve the full original layout, images or tables. Scanned PDFs need OCR. The built-in PDF font cannot render every Unicode script; unsupported text is reported instead of silently producing broken output.
           </div>
         </aside>
       </div>
     </motion.div>
   )
 }
-
-export default DocumentConverter
