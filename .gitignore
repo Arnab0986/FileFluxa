@@ -26,3 +26,8 @@ src.before-router-upgrade/
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Bundle analysis output
+stats.html
+/test-files/
+/branding-backup-20261030-011434/

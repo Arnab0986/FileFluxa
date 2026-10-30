@@ -22,8 +22,8 @@ const OPTIONS = [
   { id: 'txt-to-pdf', label: 'TXT / Markdown to PDF', accepts: '.txt,.md,.markdown' },
   { id: 'docx-to-txt', label: 'DOCX to TXT', accepts: '.docx' },
   { id: 'pdf-to-txt', label: 'PDF to TXT', accepts: '.pdf' },
-  { id: 'docx-to-pdf', label: 'DOCX to PDF (text-focused)', accepts: '.docx' },
-  { id: 'pdf-to-docx', label: 'PDF to editable DOCX (text-focused)', accepts: '.pdf' },
+  { id: 'docx-to-pdf', label: 'DOCX to PDF', accepts: '.docx' },
+  { id: 'pdf-to-docx', label: 'PDF to editable DOCX (text extraction)', accepts: '.pdf' },
   { id: 'rtf-to-txt', label: 'RTF to TXT (basic)', accepts: '.rtf' },
   { id: 'txt-to-rtf', label: 'TXT to RTF', accepts: '.txt,.md,.markdown' },
 ]
@@ -45,8 +45,12 @@ function csvToRows(input) {
       if (quoted && text[i + 1] === '"') {
         cell += '"'
         i += 1
+      } else if (quoted) {
+        quoted = false
+      } else if (cell.length === 0) {
+        quoted = true
       } else {
-        quoted = !quoted
+        throw new Error('CSV contains a quote inside an unquoted field. Check the source file formatting.')
       }
     } else if (char === ',' && !quoted) {
       row.push(cell)
@@ -351,7 +355,9 @@ function basicRtfToText(rtf) {
     .replace(/\\par[d]?\b/g, '\n')
     .replace(/\\line\b/g, '\n')
     .replace(/\\tab\b/g, '\t')
-    .replace(/\\'[0-9a-fA-F]{2}/g, '')
+    .replace(/\\'([0-9a-fA-F]{2})/g, (_, hex) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    )
     .replace(/\\u(-?\d+)\??/g, (_, code) => {
       const value = Number(code)
       return String.fromCharCode(value < 0 ? value + 65536 : value)
@@ -507,26 +513,55 @@ export function DocumentConverter() {
         const text = await extractPdfText(file)
         blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
         outputExt = 'txt'
-      } else if (action === 'docx-to-pdf') {
+
+      } else if (action === 'docx-to-pdf' || action === 'pdf-to-docx') {
+        const isDocxToPdf = action === 'docx-to-pdf'
+        const endpoint = isDocxToPdf
+          ? '/api/documents/docx-to-pdf'
+          : '/api/documents/pdf-to-docx'
+
+        outputExt = isDocxToPdf ? 'pdf' : 'docx'
+
+        setProgress(20)
+        setMessage('Preparing your document for server-side conversion...')
+
+        const formData = new FormData()
+        formData.append('file', file)
+
+        const apiBaseUrl = (
+          import.meta.env.VITE_API_BASE_URL || ''
+        ).replace(/\/+$/, '')
+
         setProgress(30)
-        setMessage('Extracting document text. Layout, images and tables may not be preserved...')
-        const mammoth = await import('mammoth')
-        const extracted = await mammoth.extractRawText({
-          arrayBuffer: await file.arrayBuffer(),
+        setMessage('Uploading document securely to the conversion API...')
+
+        const response = await fetch(`${apiBaseUrl}${endpoint}`, {
+          method: 'POST',
+          body: formData,
         })
-        if (!extracted.value.trim()) {
-          throw new Error('No extractable text was found in this DOCX. Image-only content cannot be converted by this text-based workflow.')
+
+        setProgress(75)
+        setMessage('Processing document and preparing your download...')
+
+        if (!response.ok) {
+          let errorMessage = `Conversion failed (HTTP ${response.status}).`
+
+          try {
+            const errorData = await response.json()
+            if (errorData?.error) errorMessage = errorData.error
+          } catch {
+            // Keep the HTTP error message if the response is not JSON.
+          }
+
+          throw new Error(errorMessage)
         }
-        setProgress(70)
-        blob = await createPdf(extracted.value)
-        outputExt = 'pdf'
-      } else if (action === 'pdf-to-docx') {
-        setProgress(30)
-        setMessage('Extracting selectable PDF text. Original layout and images may not be preserved...')
-        const text = await extractPdfText(file)
-        setProgress(70)
-        blob = await makeDocx(text)
-        outputExt = 'docx'
+
+        blob = await response.blob()
+
+        if (!blob.size) {
+          throw new Error('The conversion API returned an empty file.')
+        }
+
       } else if (action === 'txt-to-docx') {
         blob = await makeDocx(await file.text())
         outputExt = 'docx'
@@ -578,7 +613,7 @@ export function DocumentConverter() {
         </p>
         <p className="mt-2 flex items-center gap-2 text-xs text-emerald-700">
           <ShieldCheck className="h-4 w-4" />
-          Files are processed in your browser, not uploaded to a conversion server.
+          Most conversions run in your browser. DOCX/PDF conversions upload your file to the FileFluxa conversion API for processing.
         </p>
       </header>
 

@@ -16,13 +16,54 @@ import {
   FileDropZone,
   FileQueue,
   ProcessingMachine,
-  ResultPanel,
 } from '../components/ProcessingComponents'
 
-const formatBytes = (bytes) => {
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+
+const MAX_CLIENT_FILES = 20
+const MAX_CLIENT_FILE_SIZE = 25 * 1024 * 1024
+
+const formatBytes = (bytes = 0) => {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+const getFileName = (name = 'download') =>
+  String(name).split(/[\\/]/).pop() || 'download'
+
+async function readErrorResponse(response) {
+  const fallback = `Archive processing failed (HTTP ${response.status}).`
+
+  try {
+    const payload = await response.json()
+    return payload?.error || payload?.message || fallback
+  } catch {
+    return fallback
+  }
+}
+
+async function requestArchive(endpoint, formData, onProgress) {
+  onProgress?.(20, 'Uploading files to FileFluxa...')
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorResponse(response))
+  }
+
+  onProgress?.(75, 'Receiving processed archive...')
+
+  const blob = await response.blob()
+
+  if (!blob.size) {
+    throw new Error('The server returned an empty archive.')
+  }
+
+  return blob
 }
 
 export function ArchiveTools() {
@@ -38,6 +79,7 @@ export function ArchiveTools() {
   useEffect(() => {
     return () => {
       if (result?.url) URL.revokeObjectURL(result.url)
+
       extractedFiles.forEach((item) => {
         if (item.url) URL.revokeObjectURL(item.url)
       })
@@ -53,31 +95,76 @@ export function ArchiveTools() {
     setError('')
   }
 
-  const handleFilesSelected = (selected) => {
-    const accepted =
-      action === 'create'
-        ? selected
-        : selected.filter(
-            (file) =>
-              file.name.toLowerCase().endsWith('.zip') ||
-              file.type === 'application/zip' ||
-              file.type === 'application/x-zip-compressed'
-          )
+  const handleFilesSelected = (selected = []) => {
+    setError('')
 
-    if (!accepted.length) {
-      setError('Choose a valid ZIP archive to extract.')
+    if (!selected.length) return
+
+    if (action === 'extract') {
+      const archive = selected.find((file) => {
+        const name = file.name.toLowerCase()
+
+        return (
+          name.endsWith('.zip') ||
+          file.type === 'application/zip' ||
+          file.type === 'application/x-zip-compressed'
+        )
+      })
+
+      if (!archive) {
+        setError('Choose a valid ZIP archive to extract.')
+        return
+      }
+
+      if (archive.size > MAX_CLIENT_FILE_SIZE) {
+        setError('The selected ZIP exceeds the 25 MB upload limit.')
+        return
+      }
+
+      setFiles([archive])
+      resetOutput()
       return
     }
 
-    setFiles((current) =>
-      action === 'create'
-        ? [...current, ...accepted]
-        : [accepted[0]]
+    const oversized = selected.find(
+      (file) => file.size > MAX_CLIENT_FILE_SIZE
     )
+
+    if (oversized) {
+      setError(
+        `${oversized.name} exceeds the 25 MB per-file upload limit.`
+      )
+      return
+    }
+
+    setFiles((current) => {
+      const combined = [...current, ...selected]
+      const unique = []
+      const seen = new Set()
+
+      for (const file of combined) {
+        const key = `${file.name}:${file.size}:${file.lastModified}`
+
+        if (!seen.has(key)) {
+          seen.add(key)
+          unique.push(file)
+        }
+      }
+
+      if (unique.length > MAX_CLIENT_FILES) {
+        setError(`You can add a maximum of ${MAX_CLIENT_FILES} files.`)
+        return current
+      }
+
+      return unique
+    })
+
     resetOutput()
   }
 
   const handleActionChange = (nextAction) => {
+    if (nextAction === action) return
+
     setAction(nextAction)
     setFiles([])
     resetOutput()
@@ -86,35 +173,42 @@ export function ArchiveTools() {
   const handleProcess = async () => {
     if (!files.length || status === 'processing') return
 
+    if (action === 'extract' && !files[0]?.name?.toLowerCase().endsWith('.zip')) {
+      setError('Choose a ZIP archive to extract.')
+      return
+    }
+
     setStatus('processing')
     setProgress(5)
     setError('')
     setMessage(
       action === 'create'
         ? 'Preparing files for compression...'
-        : 'Reading ZIP archive...'
+        : 'Preparing ZIP archive for extraction...'
     )
 
     try {
+      const formData = new FormData()
+
       if (action === 'create') {
-        const zip = new JSZip()
-
         files.forEach((file) => {
-          zip.file(file.name, file)
+          formData.append('files', file, file.name)
         })
+      } else {
+        formData.append('file', files[0], files[0].name)
+      }
 
-        const blob = await zip.generateAsync(
-          {
-            type: 'blob',
-            compression: 'DEFLATE',
-            compressionOptions: { level: 6 },
-          },
-          (metadata) => {
-            setProgress(Math.min(95, Math.round(metadata.percent)))
-            setMessage(`Compressing files... ${Math.round(metadata.percent)}%`)
-          }
-        )
+      const endpoint =
+        action === 'create'
+          ? '/api/archives/create'
+          : '/api/archives/extract'
 
+      const blob = await requestArchive(endpoint, formData, (value, text) => {
+        setProgress(value)
+        setMessage(text)
+      })
+
+      if (action === 'create') {
         const output = {
           name: 'filefluxa_archive.zip',
           size: blob.size,
@@ -126,38 +220,52 @@ export function ArchiveTools() {
         setProgress(100)
         setMessage('Your ZIP archive is ready to download.')
         setStatus('completed')
-      } else {
-        const archive = await JSZip.loadAsync(files[0])
-        const entries = Object.values(archive.files).filter(
-          (entry) => !entry.dir
-        )
+        return
+      }
 
-        if (!entries.length) {
-          throw new Error('This ZIP archive does not contain any files.')
-        }
+      setProgress(80)
+      setMessage('Preparing individual extracted files...')
 
-        const outputs = []
+      // The API returns a ZIP containing the extracted files.
+      // JSZip is retained here only to unpack that response in the browser.
+      const archive = await JSZip.loadAsync(blob)
+      const entries = Object.values(archive.files).filter(
+        (entry) => !entry.dir
+      )
 
+      if (!entries.length) {
+        throw new Error('The extracted archive contains no files.')
+      }
+
+      const outputs = []
+
+      try {
         for (let index = 0; index < entries.length; index += 1) {
           const entry = entries[index]
 
-          setProgress(Math.round(((index + 1) / entries.length) * 90))
-          setMessage(`Extracting ${entry.name}...`)
+          setProgress(
+            80 + Math.round(((index + 1) / entries.length) * 19)
+          )
+          setMessage(`Preparing ${entry.name}...`)
 
-          const blob = await entry.async('blob')
+          const fileBlob = await entry.async('blob')
+
           outputs.push({
             name: entry.name,
-            size: blob.size,
-            url: URL.createObjectURL(blob),
-            blob,
+            size: fileBlob.size,
+            url: URL.createObjectURL(fileBlob),
+            blob: fileBlob,
           })
         }
-
-        setExtractedFiles(outputs)
-        setProgress(100)
-        setMessage(`Extracted ${outputs.length} file(s) successfully.`)
-        setStatus('completed')
+      } catch (processingError) {
+        outputs.forEach((item) => URL.revokeObjectURL(item.url))
+        throw processingError
       }
+
+      setExtractedFiles(outputs)
+      setProgress(100)
+      setMessage(`Extracted ${outputs.length} file(s) successfully.`)
+      setStatus('completed')
     } catch (err) {
       console.error('Archive operation failed:', err)
       setStatus('failed')
@@ -172,9 +280,10 @@ export function ArchiveTools() {
 
   const downloadFile = (file) => {
     if (!file?.url) return
+
     const link = document.createElement('a')
     link.href = file.url
-    link.download = file.name.split('/').pop() || 'download'
+    link.download = getFileName(file.name)
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -192,19 +301,20 @@ export function ArchiveTools() {
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-100 bg-cyan-50 text-cyan-700">
             <Archive className="h-6 w-6" />
           </div>
+
           <div>
             <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">
               Archive Tools
             </h1>
             <p className="mt-1 text-sm text-slate-500">
-              Create and extract ZIP archives directly in your browser.
+              Create and extract ZIP archives using FileFluxa's processing API.
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 text-sm text-emerald-700">
           <ShieldCheck className="h-4 w-4 shrink-0" />
-          Files are processed locally on your device.
+          Files are uploaded to the FileFluxa server for processing.
         </div>
       </motion.header>
 
@@ -215,19 +325,23 @@ export function ArchiveTools() {
               <button
                 type="button"
                 onClick={() => handleActionChange('create')}
+                aria-pressed={action === 'create'}
                 className={`flex items-center gap-3 rounded-xl border p-4 text-left transition ${
                   action === 'create'
                     ? 'border-cyan-300 bg-cyan-50 ring-2 ring-cyan-100'
                     : 'border-slate-200 bg-white hover:border-cyan-200 hover:bg-slate-50'
                 }`}
               >
-                <span className={`rounded-xl p-2 ${
-                  action === 'create'
-                    ? 'bg-white text-cyan-700'
-                    : 'bg-slate-100 text-slate-600'
-                }`}>
+                <span
+                  className={`rounded-xl p-2 ${
+                    action === 'create'
+                      ? 'bg-white text-cyan-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
                   <Package className="h-5 w-5" />
                 </span>
+
                 <span>
                   <span className="block text-sm font-bold text-slate-900">
                     Create ZIP
@@ -241,19 +355,23 @@ export function ArchiveTools() {
               <button
                 type="button"
                 onClick={() => handleActionChange('extract')}
+                aria-pressed={action === 'extract'}
                 className={`flex items-center gap-3 rounded-xl border p-4 text-left transition ${
                   action === 'extract'
                     ? 'border-cyan-300 bg-cyan-50 ring-2 ring-cyan-100'
                     : 'border-slate-200 bg-white hover:border-cyan-200 hover:bg-slate-50'
                 }`}
               >
-                <span className={`rounded-xl p-2 ${
-                  action === 'extract'
-                    ? 'bg-white text-cyan-700'
-                    : 'bg-slate-100 text-slate-600'
-                }`}>
+                <span
+                  className={`rounded-xl p-2 ${
+                    action === 'extract'
+                      ? 'bg-white text-cyan-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
                   <FolderOpen className="h-5 w-5" />
                 </span>
+
                 <span>
                   <span className="block text-sm font-bold text-slate-900">
                     Extract ZIP
@@ -271,6 +389,7 @@ export function ArchiveTools() {
                   ? 'Select files to add to your archive'
                   : 'Select a ZIP archive to extract'}
               </p>
+
               <FileDropZone
                 accept={action === 'extract' ? '.zip,application/zip' : undefined}
                 multiple={action === 'create'}
@@ -282,13 +401,13 @@ export function ArchiveTools() {
           {files.length > 0 && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="font-bold text-slate-900">
-                  Selected files
-                </h2>
+                <h2 className="font-bold text-slate-900">Selected files</h2>
+
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                   {files.length} file{files.length === 1 ? '' : 's'}
                 </span>
               </div>
+
               <FileQueue
                 files={files}
                 onRemove={(index) => {
@@ -306,7 +425,7 @@ export function ArchiveTools() {
               <button
                 type="button"
                 onClick={handleProcess}
-                disabled={status === 'processing'}
+                disabled={status === 'processing' || files.length === 0}
                 className="mt-4 w-full rounded-xl bg-cyan-600 px-5 py-3.5 font-bold text-white shadow-sm transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {status === 'processing'
@@ -340,11 +459,16 @@ export function ArchiveTools() {
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-700" />
+
                 <div className="min-w-0 flex-1">
-                  <p className="font-bold text-slate-900">{result.name}</p>
+                  <p className="break-all font-bold text-slate-900">
+                    {result.name}
+                  </p>
+
                   <p className="mt-1 text-sm text-slate-600">
                     ZIP archive · {formatBytes(result.size)}
                   </p>
+
                   <button
                     type="button"
                     onClick={() => downloadFile(result)}
@@ -361,13 +485,12 @@ export function ArchiveTools() {
           {extractedFiles.length > 0 && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="mb-4">
-                <h2 className="font-bold text-slate-900">
-                  Extracted files
-                </h2>
+                <h2 className="font-bold text-slate-900">Extracted files</h2>
                 <p className="mt-1 text-sm text-slate-500">
                   Download files individually to your device.
                 </p>
               </div>
+
               <div className="space-y-2">
                 {extractedFiles.map((file, index) => (
                   <div
@@ -375,6 +498,7 @@ export function ArchiveTools() {
                     className="flex items-center gap-3 rounded-xl border border-slate-200 p-3"
                   >
                     <FileArchive className="h-5 w-5 shrink-0 text-cyan-700" />
+
                     <div className="min-w-0 flex-1">
                       <p className="break-all text-sm font-semibold text-slate-800">
                         {file.name}
@@ -383,6 +507,7 @@ export function ArchiveTools() {
                         {formatBytes(file.size)}
                       </p>
                     </div>
+
                     <button
                       type="button"
                       onClick={() => downloadFile(file)}
@@ -408,6 +533,7 @@ export function ArchiveTools() {
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700">
                 <Package className="h-5 w-5" />
               </span>
+
               <div>
                 <p className="text-sm font-semibold text-slate-800">
                   ZIP compression
@@ -422,25 +548,28 @@ export function ArchiveTools() {
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700">
                 <FolderOpen className="h-5 w-5" />
               </span>
+
               <div>
                 <p className="text-sm font-semibold text-slate-800">
                   ZIP extraction
                 </p>
                 <p className="mt-1 text-xs leading-5 text-slate-500">
-                  Read an archive and download its files separately.
+                  Extract a ZIP on the server and download its files separately.
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
-            <div className="flex items-center gap-2 text-emerald-800">
+          <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+            <div className="flex items-center gap-2 text-amber-800">
               <ShieldCheck className="h-4 w-4" />
-              <span className="text-sm font-semibold">Privacy first</span>
+              <span className="text-sm font-semibold">Privacy notice</span>
             </div>
-            <p className="mt-2 text-xs leading-5 text-emerald-800">
-              Archive processing runs in your browser. Extracted files are
-              made available for download without uploading them to a server.
+
+            <p className="mt-2 text-xs leading-5 text-amber-800">
+              Files are uploaded to the FileFluxa server for processing. Avoid
+              uploading sensitive files unless you are comfortable with the
+              applicable privacy and retention practices.
             </p>
           </div>
         </aside>
@@ -448,3 +577,5 @@ export function ArchiveTools() {
     </div>
   )
 }
+
+export default ArchiveTools
